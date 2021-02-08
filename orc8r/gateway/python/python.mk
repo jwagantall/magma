@@ -52,6 +52,11 @@ $(PYTHON_BUILD):
 $(SITE_PACKAGES_DIR)/setuptools: install_virtualenv
 	$(VIRT_ENV_PIP_INSTALL) "setuptools==49.6.0"  # newer than 41.0.1
 
+# We run test_all in CircleCI without the dev VM setup, so we need an additional
+# install here
+test_deps:
+	$(VIRT_ENV_PIP_INSTALL) "fakeredis[lua]"
+
 py_patches:
 	patch --dry-run -N -s -f $(SITE_PACKAGES_DIR)/aioeventlet.py <patches/aioeventlet.py38.patch 2>/dev/null \
 	&&  (patch -N -s -f $(SITE_PACKAGES_DIR)/aioeventlet.py <patches/aioeventlet.py38.patch && echo "aioeventlet was patched" ) \
