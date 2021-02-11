@@ -121,7 +121,7 @@
     executable: pip3
   when: preburn
 
-- name: Install fakeredis for testing
-  pip:
-    name: fakeredis[lua]
-    executable: pip3
+#- name: Install fakeredis for testing
+#  pip:
+#    name: fakeredis[lua]
+#    executable: pip3
