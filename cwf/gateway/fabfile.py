@@ -397,6 +397,7 @@ def _run_integ_tests(test_host, trf_host, tests_to_run: SubTests,
     }
     if test_re:
         shell_env_vars["TESTS"] = test_re
+    test_re="TestQos"
 
     # QOS take a while to run. Increasing the timeout to 50m
     go_test_cmd = "gotestsum --format=standard-verbose "
