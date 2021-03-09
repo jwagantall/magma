@@ -2,17 +2,35 @@ name: Docker Image CI
 
 on:
   push:
-    branches: [ master ]
+    branches:
+      - benchmark
+      - master
   pull_request:
-    branches: [ master ]
+    branches: [ benchmark ]
 
 jobs:
-
-  build:
-
+        
+  cwag-precommit:
+          
     runs-on: ubuntu-latest
+
+    env:
+      GO111MODULE: on
 
     steps:
     - uses: actions/checkout@v2
-    - name: Build the Docker image
-      run: docker build . --file Dockerfile --tag my-image-name:$(date +%s)
+    - name: Export Magma root path
+      run: echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+    - name: Run golang_before_install.sh script
+      run: ./circleci/golang_before_install.sh
+    - name: Run go
+      run: |
+          cd ${MAGMA_ROOT}/cwf/gateway
+          go mod download
+    - name: Run make
+      run: |
+          cd ${MAGMA_ROOT}/cwf/gateway
+          make -C ${MAGMA_ROOT}/cwf/gateway precommit
+          cd ${MAGMA_ROOT}/cwf/gateway
+          make -C ${MAGMA_ROOT}/cwf/gateway/integ_tests precommit
+#    - magma_slack_notify
