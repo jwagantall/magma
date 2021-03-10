@@ -34,3 +34,64 @@ jobs:
           cd ${MAGMA_ROOT}/cwf/gateway
           make -C ${MAGMA_ROOT}/cwf/gateway/integ_tests precommit
 #    - magma_slack_notify
+
+  cwf-integ-test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup variables
+      run: |
+          echo "stack=cwf" >> $GITHUB_ENV
+          echo "test=True" >> $GITHUB_ENV
+          echo "build=False" >> $GITHUB_ENV
+          echo "deploy=False" >> $GITHUB_ENV
+    - name: Export Magma root path
+      run: echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+    - name: Install tools
+      run: |
+            sudo apt-get update
+            sudo apt-get install -y openvpn
+    - name: Configure and start VPN client
+      run: |
+            echo $MAGMA_OVPN_CONF | base64 -d - > ciworker.conf
+            sudo mv ciworker.conf /etc/openvpn/client.conf
+            sudo service openvpn@client restart
+    - name: Decode and set secrets
+      run: |
+            cd ${MAGMA_ROOT}/circleci
+            echo $MAGMA_NODE_PKEY | base64 -d - > ci_node.pem
+            chmod 0400 ci_node.pem
+            echo $MAGMA_API_CERT | base64 -d - > ci_operator.pfx
+            openssl pkcs12 -in ci_operator.pfx -nocerts -out ci_operator.key.pem -nodes -passin pass:
+            openssl pkcs12 -in ci_operator.pfx -nokeys -out ci_operator.pem -passin pass:
+            echo $MAGMA_ROOTCA | base64 -d - > rootCA.pem
+            echo $MAGMA_CONTROL_PROXY | base64 -d - > control_proxy.yml
+            echo export AWS_DEFAULT_REGION="us-east-1" >> $BASH_ENV
+            echo export AWS_ACCESS_KEY_ID="$(printenv MAGMA_DEPLOY_AWS_ACCESS_KEY_ID)" >> $BASH_ENV
+            echo export AWS_SECRET_ACCESS_KEY="$(printenv MAGMA_DEPLOY_AWS_SECRET_ACCESS_KEY)" >> $BASH_ENV
+#      - python/set_version
+    - name: Install python prerequisites
+      run: pip3 install fabric3 jsonpickle requests PyYAML awscli
+      # sleep 10 just in case the vpn client takes time to spin up
+    - name: Run remote integ test
+      run: |
+            sleep 10
+            cd ${MAGMA_ROOT}/circleci
+            fab <<parameters.stack>> integ_test:repo=${CIRCLE_REPOSITORY_URL},branch=${CIRCLE_BRANCH},sha1=${CIRCLE_SHA1},run_integ_test=<<parameters.test>>,build_package=<<parameters.build>>,deploy_artifacts=<<parameters.deploy>>
+            mkdir -p versions
+            cp *_version versions || true
+      timeout-minutes: 20
+#      - store_artifacts:
+#          path: /tmp/logs
+#      - store_test_results:
+#          path: /tmp/test-results
+    - name: Double-check that the node is freed
+      run: |
+            cd ${MAGMA_ROOT}/circleci
+            lease_id=$(cat lease_id.out)
+            lease_node=$(cat lease_node.out)
+            curl -X POST "https://api-staging.magma.etagecom.io/magma/v1/ci/nodes/${lease_node}/release/${lease_id}" -k --key ci_operator.key.pem --cert ci_operator.pem || true
+      if: always()
+#      - magma_slack_notify
