@@ -1,0 +1,69 @@
+name: cwag-precommit
+
+on:
+  push:
+    branches:
+      - benchmark
+      - master
+  pull_request:
+    branches: [ benchmark ]
+
+jobs:
+
+  cwag-precommit:
+
+    runs-on: ubuntu-latest
+
+    env:
+      GO111MODULE: on
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export Magma root path
+      run: echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+    - name: Run golang_before_install.sh script
+      run: ./circleci/golang_before_install.sh
+    - name: Run go
+      run: |
+          cd ${MAGMA_ROOT}/cwf/gateway
+          go mod download
+    - name: Run make
+      run: |
+          cd ${MAGMA_ROOT}/cwf/gateway
+          make -C ${MAGMA_ROOT}/cwf/gateway precommit
+          cd ${MAGMA_ROOT}/cwf/gateway
+          make -C ${MAGMA_ROOT}/cwf/gateway/integ_tests precommit
+#    - magma_slack_notify
+
+  cwag-deploy:
+
+    needs: [cwag-precommit, cwf-integ-test]
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export Magma root path
+      run: |
+          echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+          echo "DOCKER_REGISTRY=cwf_" >> $GITHUB_ENV
+#      - build/determinator:
+#          <<: *cwf_build_verify
+    - name: Build the docker-compose stack
+      run: |
+           docker-compose up -d
+    - name: Build CWAG containers
+      run: |
+            cd ${MAGMA_ROOT}/cwf/gateway/docker
+            docker-compose -f docker-compose.yml -f docker-compose.override.yml build --parallel
+            #      - tag-push-docker:
+            # project: cwf
+            #images: <<parameters.images>>
+            #tag: <<parameters.tag>>
+            #registry: $DOCKER_MAGMA_REGISTRY
+            #tag-latest: <<parameters.tag-latest>>
+            #      - persist-githash-version:
+            #file_prefix: cwag
+#      - notify-magma:
+#          artifact_name: CWAG
+#          version_path: versions/cwag_version
+#      - magma_slack_notify
