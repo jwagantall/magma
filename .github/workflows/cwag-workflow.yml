@@ -10,6 +10,8 @@ on:
 
 jobs:
 
+########## CWAG-PRECOMMIT ##########
+
   cwag-precommit:
 
     runs-on: ubuntu-latest
@@ -35,6 +37,7 @@ jobs:
           make -C ${MAGMA_ROOT}/cwf/gateway/integ_tests precommit
 #    - magma_slack_notify
 
+########## CWF-INTEG-TEST ##########
 
   cwf-integ-test:
 
@@ -97,6 +100,40 @@ jobs:
       if: always()
 #      - magma_slack_notify
 
+########## XWFM-TEST ##########
+
+  xwfm-test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Environment Variables
+      run: |
+            echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+            echo "RUN_UID=${RANDOM}" >> $GITHUB_ENV
+    - name: Build the docker-compose stack
+      run: |
+           cd ${MAGMA_ROOT}/xwf/docker/
+           docker-compose up -d
+    - name: Loading openvswitch kernel module
+      run: sudo modprobe openvswitch
+    - name: Run docker compose
+      run: |
+            env
+            docker login -u ${XWF_ARTIFACTORY_USER} -p ${XWF_ARTIFACTORY_API_KEY} ${XWF_ARTIFACTORY_LINK}
+            docker-compose pull || true
+            docker-compose build --parallel && docker-compose up -d && docker exec tests pytest --log-cli-level=info code/tests.py
+            #      - when:
+            #condition: <<parameters.notify_magma_ci>>
+            #steps: magma_slack_notify
+            #- when:
+            #condition: <<parameters.notify_xwfm_ci>>
+            #steps:
+            #- magma_slack_notify:
+            #    channel: "#xwfm_ci"
+
+########## CWAG-DEPLOY ##########
 
   cwag-deploy:
 
@@ -130,3 +167,43 @@ jobs:
 #          artifact_name: CWAG
 #          version_path: versions/cwag_version
 #      - magma_slack_notify
+
+########## XWFM-DEPLOY ##########
+
+  xwfm-deploy-latest:
+
+    needs: [cwag-deploy, cwf-integ-test]
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export Magma root path
+      run: |
+          echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+          echo "DOCKER_REGISTRY=cwf_" >> $GITHUB_ENV
+          echo "tag-latest=true" >> $GITHUB_ENV
+    - name: Build the docker-compose stack
+      run: |
+           docker-compose up -d
+
+    - name: Build xwf go radius
+      run: |
+            cd ${MAGMA_ROOT}/feg
+            docker build --build-arg BUILD_NUM=${CIRCLE_SHA1:0:8} --tag goradius -f radius/src/Dockerfile ./
+            # - tag-push-docker:
+            #images: 'goradius'
+            #tag: <<parameters.tag>>
+            #registry: $DOCKER_MAGMA_REGISTRY
+            #tag-latest: <<parameters.tag-latest>>
+    - name: Load openvswitch kernel module for xwf integ test
+      run: sudo modprobe openvswitch
+    - name: Build xwfm-integ-tests
+      run: |
+            cd ${MAGMA_ROOT}
+            docker build --tag xwfm-integ-tests -f xwf/gateway/integ_tests/gw/Dockerfile ./
+            # - tag-push-docker:
+            #images: 'xwfm-integ-tests'
+            #tag: <<parameters.tag>>
+            #registry: $DOCKER_MAGMA_REGISTRY
+            #tag-latest: <<parameters.tag-latest>>
+          #      - magma_slack_notify
