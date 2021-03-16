@@ -1,4 +1,4 @@
-name: cwag-precommit
+name: cwag-workflow
 
 on:
   push:
