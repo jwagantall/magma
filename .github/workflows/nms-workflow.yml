@@ -1,0 +1,201 @@
+name: nms-workflow
+
+on:
+  push:
+    branches:
+      - benchmark
+      - master
+  pull_request:
+    branches: [ benchmark ]
+
+jobs:
+
+########## NMS-FLOW-TEST ##########
+
+  nms-flow-test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+#      - build/determinator:
+#          <<: *nms_build_verify
+    - name: Export Magma root path
+      run: |
+          echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+    - name: Install flow
+      run: |
+          cd ${MAGMA_ROOT}/nms/app
+          yarn add --dev -W flow-bin@$(x=$(grep "\[version\]" .flowconfig -A 1 | tail -n 1); echo ${x:1})
+    - uses: actions/cache@v1
+      id: restore_cache
+      with:
+        key: yarn-packages-{{ checksum "nms/app/yarn.lock" }}
+        path: ~/.cache/yarn
+    - name: Install Dependencies
+      run: |
+          cd ${MAGMA_ROOT}/nms/app
+          if [ $(node -v) == 'v6.1.0' ]; then
+            source $NVM_DIR/nvm.sh
+            nvm install stable
+          fi
+          yarn install --frozen-lockfile
+    - uses: actions/cache@v1
+      id: save_cache
+      with:
+        key: yarn-packages-{{ checksum "nms/app/yarn.lock" }}
+        path: ~/.cache/yarn
+    - name: flow typecheck
+      run: |
+          cd ${MAGMA_ROOT}/nms/app
+          yarn run flow
+#    - magma_slack_notify
+
+########## ESLINT ##########
+
+  eslint:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+#      - build/determinator:
+#          <<: *nms_build_verify
+    - name: Export Magma root path
+      run: |
+          echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+    - uses: actions/cache@v1
+      id: restore_cache
+      with:
+        key: yarn-packages-{{ checksum "nms/app/yarn.lock" }}
+        path: ~/.cache/yarn
+    - name: Install Dependencies
+      run: |
+          cd ${MAGMA_ROOT}/nms/app
+          if [ $(node -v) == 'v6.1.0' ]; then
+            source $NVM_DIR/nvm.sh
+            nvm install stable
+          fi
+          yarn install --frozen-lockfile
+    - uses: actions/cache@v1
+      id: save_cache
+      with:
+        key: yarn-packages-{{ checksum "nms/app/yarn.lock" }}
+        path: ~/.cache/yarn
+    - name: eslint
+      run: |
+          cd ${MAGMA_ROOT}/nms/app
+          yarn run eslint .
+#    - magma_slack_notify
+
+########## NMS-YARN-TEST ##########
+
+  nms-yarn-test:
+
+    runs-on: ubuntu-latest
+    needs: nms-flow-test
+
+    steps:
+    - uses: actions/checkout@v2
+#      - build/determinator:
+#          <<: *nms_build_verify
+    - name: Export Magma root path
+      run: |
+          echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+    - uses: actions/cache@v1
+      id: restore_cache
+      with:
+        key: yarn-packages-{{ checksum "nms/app/yarn.lock" }}
+        path: ~/.cache/yarn
+    - name: Install Dependencies
+      run: |
+          cd ${MAGMA_ROOT}/nms/app
+          if [ $(node -v) == 'v6.1.0' ]; then
+            source $NVM_DIR/nvm.sh
+            nvm install stable
+          fi
+          yarn install --frozen-lockfile
+    - uses: actions/cache@v1
+      id: save_cache
+      with:
+        key: yarn-packages-{{ checksum "nms/app/yarn.lock" }}
+        path: ~/.cache/yarn
+    - name: yarn test
+      run: |
+          cd ${MAGMA_ROOT}/nms/app
+          yarn test:ci
+#    - magma_slack_notify
+
+########## NMS-E2E-TEST ##########
+
+  nms-e2e-test:
+
+    runs-on: ubuntu-latest
+    needs: [nms-flow-test, eslint, nms-yarn-test]
+
+    steps:
+    - uses: actions/checkout@v2
+#      - build/determinator:
+#          <<: *nms_build_verify
+    - name: Export Magma root path
+      run: |
+          echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+          echo "NMS_ROOT=${MAGMA_ROOT}/nms/app/packages/magmalte" >> $GITHUB_ENV
+          echo "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true" >> $GITHUB_ENV
+          echo "PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable" >> $GITHUB_ENV
+    - uses: actions/cache@v1
+      id: restore_cache
+      with:
+        key: yarn-packages-{{ checksum "nms/app/yarn.lock" }}
+        path: ~/.cache/yarn
+    - name: Install Dependencies
+      run: |
+          cd ${MAGMA_ROOT}/nms/app
+          if [ $(node -v) == 'v6.1.0' ]; then
+            source $NVM_DIR/nvm.sh
+            nvm install stable
+          fi
+          yarn install --frozen-lockfile
+    - uses: actions/cache@v1
+      id: save_cache
+      with:
+        key: yarn-packages-{{ checksum "nms/app/yarn.lock" }}
+        path: ~/.cache/yarn
+    - name: e2e test setup
+      run: |
+          source $NVM_DIR/nvm.sh
+          nvm install stable
+          cd ${MAGMA_ROOT}/nms/app/packages/magmalte
+          ./e2e_test_setup.sh
+#      - store_artifacts:
+#          path: /tmp/nms_artifacts
+#    - magma_slack_notify
+
+########## NMS-BUILD ##########
+
+  nms-build:
+
+    runs-on: ubuntu-latest
+    needs: [nms-flow-test, eslint, nms-yarn-test, nms-e2e-test]
+
+    steps:
+    - uses: actions/checkout@v2
+#      - build/determinator:
+#          <<: *nms_build_verify
+    - name: Export Magma root path
+      run: |
+          echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+          echo "NMS_ROOT=${MAGMA_ROOT}/nms/app/packages/magmalte" >> $GITHUB_ENV
+    - name: Run docker-compose
+      run: |
+          cd ${MAGMA_ROOT}/nms/app/packages/magmalte
+          docker-compose build magmalte
+#      - tag-push-docker:
+#          project: magmalte
+#          images: "magmalte"
+#      - persist-githash-version:
+#          file_prefix: nms
+#      - notify-magma:
+#          artifact_name: NMS
+#          version_path: versions/nms_version
+#      - magma_slack_notify
