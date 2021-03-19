@@ -1,0 +1,36 @@
+name: lib-gateway-workflow
+
+on:
+  push:
+    branches:
+      - benchmark
+      - master
+  pull_request:
+    branches: [ benchmark ]
+
+jobs:
+
+########## ORC8R-GATEWAY-TEST ##########
+
+  orc8r-gateway-test:
+
+    runs-on: ubuntu-latest
+
+    env:
+      GO111MODULE: on
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export Magma root path
+      run: echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+    - name: Run go mod download with retry
+      uses: nick-invision/retry@v2
+      with:
+        command: cd ${MAGMA_ROOT}/cwf/gateway && go mod download
+        timeout_minutes: 10
+    - name: Run go
+      run: |
+          cd ${MAGMA_ROOT}/orc8r/gateway/go
+          go test ./...
+          go vet ./...
+#    - magma_slack_notify
