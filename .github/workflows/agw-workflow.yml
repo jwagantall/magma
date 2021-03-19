@@ -1,0 +1,49 @@
+name: agw-workflow
+
+on:
+  push:
+    branches:
+      - benchmark
+      - master
+  pull_request:
+    branches: [ benchmark ]
+
+jobs:
+
+########## LTE-TEST ##########
+
+  lte-test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export environment
+      run: |
+          echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+          echo "PYTHON_BUILD=${MAGMA_ROOT}/build" >> $GITHUB_ENV
+          echo "PIP_CACHE_HOME=${MAGMA_ROOT}/.pipcache" >> $GITHUB_ENV
+          echo "MAGMA_DEV_MODE=1" >> $GITHUB_ENV
+          echo "SKIP_SUDO_TESTS=1" >> $GITHUB_ENV
+          echo "CODEGEN_ROOT=${MAGMA_ROOT}/.codegen" >> $GITHUB_ENV
+          echo "SWAGGER_CODEGEN_JAR=${MAGMA_ROOT}/.codegen/swagger-codegen-cli.jar" >> $GITHUB_ENV
+    - name: Install libraries
+      run: |
+          mkdir -p /var/tmp/test_results
+          sudo apt-get update -y
+          sudo apt-get install -y libsystemd-dev pkg-config curl zip unzip
+          sudo apt-get install -y virtualenv python-babel python-dev build-essential python3-setuptools python-setuptools autogen autoconf libtool python3-apt python3-requests python3-pip python-protobuf
+          sudo curl -Lfs https://github.com/google/protobuf/releases/download/v3.1.0/protoc-3.1.0-linux-x86_64.zip -o protoc3.zip
+          sudo unzip protoc3.zip -d protoc3
+          sudo mv protoc3/bin/protoc /bin/protoc
+          sudo chmod a+rx /bin/protoc
+          sudo mv protoc3/include/google /usr/include/
+          sudo chmod -R a+Xr /usr/include/google
+          sudo rm -rf protoc3.zip protoc3
+          sudo mkdir ${CODEGEN_ROOT}
+          sudo wget https://repo1.maven.org/maven2/io/swagger/swagger-codegen-cli/2.2.3/swagger-codegen-cli-2.2.3.jar -O $SWAGGER_CODEGEN_JAR
+          sudo chmod -R 755 $CODEGEN_ROOT
+          sudo make -C $MAGMA_ROOT/lte/gateway/python test_all
+#      - store_test_results:
+#          path: /var/tmp/test_results
+#    - magma_slack_notify
