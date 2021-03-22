@@ -3,16 +3,23 @@ name: cwf-operator
 on:
   push:
     branches:
-      - benchmark
       - master
+      - benchmark
+    paths:
+      - '.github/**'
+      - 'cwf/**'
+      - 'k8s/**'
   pull_request:
-    branches: [ benchmark ]
-
+    branches:
+      - master
+    paths:
+      - 'cwf/**'
+      - 'k8s/**'
 jobs:
 
 ########## CWF-PRECOMMIT ##########
 
-  cwf-precommit:
+  cwf-operator-precommit:
 
     runs-on: ubuntu-latest
 
@@ -25,7 +32,7 @@ jobs:
       run: echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
     - name: Run golang_before_install.sh script
       run: ./circleci/golang_before_install.sh
-    - name: Move into correct dir
+    - name: Move into cwf dir
       run: cd ${MAGMA_ROOT}/cwf/k8s/cwf_operator
     - name: Run go mod download with retry
       uses: nick-invision/retry@v2
@@ -41,7 +48,7 @@ jobs:
 
   cwf-operator-build:
 
-    needs: cwf-precommit
+    needs: cwf-operator-precommit
     runs-on: ubuntu-latest
 
     steps:
@@ -49,9 +56,6 @@ jobs:
     - name: Export Magma root path
       run: |
           echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
-          echo "DOCKER_REGISTRY=cwf_" >> $GITHUB_ENV
-#      - build/determinator:
-#          paths: "cwf/k8s"
     - name: Build the docker-compose stack
       run: |
            cd ${MAGMA_ROOT}/cwf/k8s/cwf_operator/docker
@@ -60,12 +64,38 @@ jobs:
       run: |
            cd ${MAGMA_ROOT}/cwf/k8s/cwf_operator/docker
            DOCKER_REGISTRY=cwf_ docker-compose build --parallel
-#      - tag-push-docker:
-#          project: cwf
-#          images: "operator"
-#          registry: $DOCKER_MAGMA_REGISTRY
-#      - persist-githash-version:
-#          file_prefix: cwf_operator
+    - name: Login to Docker registry
+      uses: docker/login-action@v1
+      with:
+          registry: ${{ DOCKER_MAGMA_REGISTRY }}
+          username: ${{ USERNAME }}
+          password: ${{ PASSWORD }}
+    - name: Build and push
+      uses: docker/build-push-action@v2
+      with:
+          context: .
+          push: true
+          tags: operator:${GITHUB_SHA:0:8}
+    - name: Login to Jfrog Docker registry
+      uses: docker/login-action@v1
+      with:
+          registry: ${{ JFROG_DOCKER_CWF_REGISTRY }}
+          username: ${{ JFROG_USERNAME }}
+          password: ${{ JFROG_PASSWORD }}
+    - name: Build and push
+      uses: docker/build-push-action@v2
+      with:
+          context: .
+          push: true
+          tags: operator:${GITHUB_SHA:0:8}
+    - name: persist-githash-version - Set prefix
+      run: |
+          echo "file_prefix=cwf_operator" >> $GITHUB_ENV
+    - name: persist-githash-version - Create version file
+      run: |
+          cd ${MAGMA_ROOT}/circleci
+          mkdir -p versions
+          echo "${GITHUB_SHA:0:8}" > versions/<< ${file_prefix} >>_version
 #      - notify-magma:
 #          artifact_name: CWF Operator
 #          version_path: versions/cwf_operator_version
