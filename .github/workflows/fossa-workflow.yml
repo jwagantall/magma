@@ -1,0 +1,34 @@
+name: fossa-workflow
+
+on:
+  push:
+    branches:
+      - benchmark
+      - master
+  pull_request:
+    branches: [ benchmark ]
+
+jobs:
+
+########## FOSSA-ANALYZE ##########
+
+  fosa-analyze:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export Magma root path
+      run: |
+          echo "MAGMA_ROOT=/tmp/magma" >> $GITHUB_ENV
+          echo "FOSSA_ROOT=$(pwd)" >> $GITHUB_ENV
+    - name: Run fossa analyze script
+      run: |
+          mkdir -p $MAGMA_ROOT && cd $MAGMA_ROOT
+          wget https://github.com/fossas/fossa-cli/releases/download/v1.0.11/fossa-cli_1.0.11_linux_amd64.tar.gz
+          bash -c 'sha256sum fossa-cli_1.0.11_linux_amd64.tar.gz | grep -q 0e20286630a9bc5a17408c81e6ba9003f91a14fdd680b96ca4def400693e028e'
+          rm -f /tmp/magma/fossa
+          tar xzf fossa-cli_1.0.11_linux_amd64.tar.gz
+          sudo cp /tmp/magma/fossa /usr/local/bin/
+          sudo ${FOSSA_ROOT}/circleci/fossa-analyze-go.sh
+#    - magma_slack_notify
