@@ -1,0 +1,38 @@
+name: docusaurus-workflow
+
+on:
+  push:
+    branches:
+      - benchmark
+      - master
+  pull_request:
+    branches: [ benchmark ]
+
+jobs:
+
+########## DOCUSAURUS-BUILD-AND-DEPLOY ##########
+
+  docusaurus-build-and-deploy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export vars
+      run: |
+          echo "DOCUSAURUS_URL=https://magma.github.io" >> $GITHUB_ENV
+          echo "DOCUSAURUS_BASE_URL=/magma/" >> $GITHUB_ENV
+    - name: Setup docusaurus expected directory structure
+      run: |
+          mv docs/docusaurus website/
+          mv docs/readmes readmes/
+          rm -rf docs/
+          mv readmes/ docs/
+    - name: Deploying to GitHub Pages
+      run: |
+          git config --global user.email "mamga-docusaurus-bot@users.noreply.github.com"
+          git config --global user.name "mamga-docusaurus-bot"
+          echo "machine github.com login mamga-docusaurus-bot password $GITHUB_TOKEN" > ~/.netrc
+          cd website && yarn install
+          CUSTOM_COMMIT_MESSAGE="[skip ci] Deploy website" GIT_USER=mamga-docusaurus-bot yarn run publish-gh-pages
+#    - magma_slack_notify
