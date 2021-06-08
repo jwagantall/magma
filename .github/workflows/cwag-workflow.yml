@@ -1,0 +1,369 @@
+name: cwag-workflow
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'orc8r/**'
+      - 'lte/**'
+      - 'feg/**'
+      - 'cwf/**'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'orc8r/**'
+      - 'lte/**'
+      - 'feg/**'
+      - 'cwf/**'
+
+jobs:
+
+########## CWAG-PRECOMMIT ##########
+
+  cwag-precommit:
+
+    runs-on: ubuntu-latest
+
+    env:
+      GO111MODULE: on
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export Magma root path
+      run: echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+    - name: Run golang_before_install.sh script
+      run: ./circleci/golang_before_install.sh
+    - name: Run go
+      run: |
+          cd ${MAGMA_ROOT}/cwf/gateway
+          go mod download
+    - name: Run make
+      run: |
+          cd ${MAGMA_ROOT}/cwf/gateway
+          make -C ${MAGMA_ROOT}/cwf/gateway precommit
+          cd ${MAGMA_ROOT}/cwf/gateway
+          make -C ${MAGMA_ROOT}/cwf/gateway/integ_tests precommit
+#    - magma_slack_notify
+
+########## CWAG-BUILD ##########
+
+  cwag-build:
+
+    runs-on: ubuntu-latest
+
+    env:
+      GO111MODULE: on
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export Magma root path
+      run: echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+    - name: Run docker-compose
+      uses: nick-invision/retry@v2
+      with:
+        command: cd ${MAGMA_ROOT}/cwf/gateway/docker && docker-compose build --parallel
+        max_attempts: 2
+
+########## CWF-INTEG-TEST ##########
+
+  cwf-integ-test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup variables
+      run: |
+          echo "stack=cwf" >> $GITHUB_ENV
+          echo "test=True" >> $GITHUB_ENV
+          echo "build=False" >> $GITHUB_ENV
+          echo "deploy=False" >> $GITHUB_ENV
+    - name: Export Magma root path
+      run: echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+    - name: Install tools
+      run: |
+            sudo apt-get update
+            sudo apt-get install -y openvpn
+    - name: Configure and start VPN client
+      run: |
+            echo $MAGMA_OVPN_CONF | base64 -d - > ciworker.conf
+            sudo mv ciworker.conf /etc/openvpn/client.conf
+            sudo service openvpn@client restart
+    - name: Decode and set secrets
+      run: |
+            cd ${MAGMA_ROOT}/circleci
+            echo $MAGMA_NODE_PKEY | base64 -d - > ci_node.pem
+            chmod 0400 ci_node.pem
+            echo $MAGMA_API_CERT | base64 -d - > ci_operator.pfx
+            openssl pkcs12 -in ci_operator.pfx -nocerts -out ci_operator.key.pem -nodes -passin pass:
+            openssl pkcs12 -in ci_operator.pfx -nokeys -out ci_operator.pem -passin pass:
+            echo $MAGMA_ROOTCA | base64 -d - > rootCA.pem
+            echo $MAGMA_CONTROL_PROXY | base64 -d - > control_proxy.yml
+            echo export AWS_DEFAULT_REGION="us-east-1" >> $BASH_ENV
+            echo export AWS_ACCESS_KEY_ID="$(printenv MAGMA_DEPLOY_AWS_ACCESS_KEY_ID)" >> $BASH_ENV
+            echo export AWS_SECRET_ACCESS_KEY="$(printenv MAGMA_DEPLOY_AWS_SECRET_ACCESS_KEY)" >> $BASH_ENV
+    - uses: actions/setup-python@v2
+      with:
+        python-version: '3.7.1'
+    - name: Install python prerequisites
+      run: pip3 install fabric3 jsonpickle requests PyYAML awscli
+      # sleep 10 just in case the vpn client takes time to spin up
+    - name: Run remote integ test
+      run: |
+            sleep 10
+            cd ${MAGMA_ROOT}/circleci
+            fab <<parameters.stack>> integ_test:repo=${CIRCLE_REPOSITORY_URL},branch=${CIRCLE_BRANCH},sha1=${CIRCLE_SHA1},run_integ_test=<<parameters.test>>,build_package=<<parameters.build>>,deploy_artifacts=<<parameters.deploy>>
+            mkdir -p versions
+            cp *_version versions || true
+      timeout-minutes: 20
+    - name: Copy debian packages to new JFROG repo
+      run: |
+            cd ${MAGMA_ROOT}/circleci
+            PACKAGE_FILE=packages.tar.gz
+            if [ -f "${PACKAGE_FILE}" ]; then
+               echo "${PACKAGE_FILE} exists"
+               rm -rf *.deb
+               tar xvf ${PACKAGE_FILE}
+               for i in `ls -a1 *.deb`
+               do
+                  echo "Pushing package $i to JFROG artifiactory: ${JFROG_DEBIANLOCAL_REGISTRY}"
+                  curl -uci-bot:${JFROG_CIBOT_APIKEYS} -XPUT "${JFROG_DEBIANLOCAL_REGISTRY}/focal-ci/$i;deb.distribution=stretch-ci;deb.component=main;deb.architecture=amd64" -T $i
+               done
+            else
+               echo "${PACKAGE_FILE} does NOT exist"
+               echo "No debian packages to push to JFROG"
+            fi
+    - uses: actions/upload-artifact@v2
+      with:
+        path: /tmp/logs
+    - name: Publish Unit Test Results
+      uses: EnricoMi/publish-unit-test-result-action@v1
+      if: always()
+      with:
+        files: /tmp/test-results/*
+    - name: Double-check that the node is freed
+      run: |
+            cd ${MAGMA_ROOT}/circleci
+            lease_id=$(cat lease_id.out)
+            lease_node=$(cat lease_node.out)
+            curl -X POST "https://api-staging.magma.etagecom.io/magma/v1/ci/nodes/${lease_node}/release/${lease_id}" -k --key ci_operator.key.pem --cert ci_operator.pem || true
+      if: always()
+#      - magma_slack_notify
+
+########## XWFM-TEST ##########
+
+  xwfm-test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Environment Variables
+      run: |
+            echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+            echo "RUN_UID=${RANDOM}" >> $GITHUB_ENV
+    - name: Build the docker-compose stack
+      run: |
+           cd ${MAGMA_ROOT}/xwf/docker/
+           docker-compose up -d
+    - name: Loading openvswitch kernel module
+      run: sudo modprobe openvswitch
+    - name: Run docker compose
+      run: |
+            env
+            docker login -u ${XWF_ARTIFACTORY_USER} -p ${XWF_ARTIFACTORY_API_KEY} ${XWF_ARTIFACTORY_LINK}
+            docker-compose pull || true
+            docker-compose build --parallel && docker-compose up -d && docker exec tests pytest --log-cli-level=info code/tests.py
+    - name: Publish magma_slack_notify
+      if: <<parameters.notify_magma_ci>>
+      run: magma_slack_notify
+
+    - name: Publish parameters.notify_xwfm_ci
+      if: <<parameters.notify_xwfm_ci>>
+      run: |
+           - magma_slack_notify:
+             channel: "#xwfm_ci"
+
+########## CWAG-DEPLOY ##########
+
+  cwag-deploy:
+
+    needs: [cwag-precommit, cwf-integ-test]
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export Magma root path
+      run: |
+          echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+          echo "DOCKER_REGISTRY=cwf_" >> $GITHUB_ENV
+    - name: Build the docker-compose stack
+      run: |
+           docker-compose up -d
+    - name: Build CWAG containers
+      run: |
+            cd ${MAGMA_ROOT}/cwf/gateway/docker
+            docker-compose -f docker-compose.yml -f docker-compose.override.yml build --parallel
+    - name: tag-push-docker
+      run: |
+          if [ "${GITHUB_BASE_REF}" != "master" ]; then
+            echo "Push only happens for master branch"
+            exit 0
+          fi
+          DOCKER_REGISTRY="$DOCKER_FEG_REGISTRY"
+          DOCKER_USERNAME="$USERNAME"
+          DOCKER_PASSWORD="$PASSWORD"
+          docker login "${DOCKER_REGISTRY}" -u "${DOCKER_USERNAME}" -p "${DOCKER_PASSWORD}"
+          IMAGES="cwag_go|gateway_go|gateway_python|gateway_sessiond|gateway_pipelined"
+          IMAGES_ARRAY=($(echo $IMAGES | tr "|" "\n"))
+          PROJECT=cwf
+          TAG=${GITHUB_SHA:0:8}
+          TAG_LATEST=false
+          function tag_and_push {
+            docker tag "$IMAGE_ID" "${DOCKER_REGISTRY}/$IMAGE:$1"
+            echo "Pushing ${DOCKER_REGISTRY}/$IMAGE:$1"
+            docker push "${DOCKER_REGISTRY}/$IMAGE:$1"
+          }
+          for IMAGE in "${IMAGES_ARRAY[@]}"; do
+            IMAGE_TOSEARCH=$IMAGE
+            if [ ! -z $PROJECT ]; then
+              IMAGE_TOSEARCH="${PROJECT}_${IMAGE}"
+            fi
+            IMAGE_ID=$(docker images "$IMAGE_TOSEARCH:latest" --format "{{.ID}}")
+            tag_and_push "$TAG"
+            if [ "$TAG_LATEST" = true ]; then
+              tag_and_push "latest"
+            fi
+          done
+    - name: persist-githash-version - Set prefix
+      run: |
+          echo "file_prefix=cwag" >> $GITHUB_ENV
+    - name: persist-githash-version - Create version file
+      run: |
+          cd ${MAGMA_ROOT}/circleci
+          mkdir -p versions
+          echo "${GITHUB_SHA:0:8}" > versions/<< ${file_prefix} >>_version
+#      - magma_slack_notify
+
+########## XWFM-DEPLOY ##########
+
+  xwfm-deploy-latest:
+
+    needs: [cwag-deploy, xwfm-test]
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export Magma root path
+      run: |
+          echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+          echo "DOCKER_REGISTRY=cwf_" >> $GITHUB_ENV
+          echo "tag-latest=true" >> $GITHUB_ENV
+    - name: Build the docker-compose stack
+      run: |
+           docker-compose up -d
+    - name: Build xwf go radius
+      run: |
+            cd ${MAGMA_ROOT}/feg
+            docker build --build-arg BUILD_NUM=${CIRCLE_SHA1:0:8} --tag goradius -f radius/src/Dockerfile ./
+    - name: Load openvswitch kernel module for xwf integ test
+      run: sudo modprobe openvswitch
+    - name: Build xwfm-integ-tests
+      run: |
+            cd ${MAGMA_ROOT}
+            docker build --tag xwfm-integ-tests -f xwf/gateway/integ_tests/gw/Dockerfile ./
+    - name: tag-push-docker
+      run: |
+          if [ "${GITHUB_BASE_REF}" != "master" ]; then
+            echo "Push only happens for master branch"
+            exit 0
+          fi
+          DOCKER_REGISTRY="$DOCKER_FEG_REGISTRY"
+          DOCKER_USERNAME="$USERNAME"
+          DOCKER_PASSWORD="$PASSWORD"
+          docker login "${DOCKER_REGISTRY}" -u "${DOCKER_USERNAME}" -p "${DOCKER_PASSWORD}"
+          IMAGES="goradius|xwfm-integ-tests"
+          IMAGES_ARRAY=($(echo $IMAGES | tr "|" "\n"))
+          PROJECT=cwag
+          TAG=${GITHUB_SHA:0:8}
+          TAG_LATEST=false
+          function tag_and_push {
+            docker tag "$IMAGE_ID" "${DOCKER_REGISTRY}/$IMAGE:$1"
+            echo "Pushing ${DOCKER_REGISTRY}/$IMAGE:$1"
+            docker push "${DOCKER_REGISTRY}/$IMAGE:$1"
+          }
+          for IMAGE in "${IMAGES_ARRAY[@]}"; do
+            IMAGE_TOSEARCH=$IMAGE
+            if [ ! -z $PROJECT ]; then
+              IMAGE_TOSEARCH="${PROJECT}_${IMAGE}"
+            fi
+            IMAGE_ID=$(docker images "$IMAGE_TOSEARCH:latest" --format "{{.ID}}")
+            tag_and_push "$TAG"
+            if [ "$TAG_LATEST" = true ]; then
+              tag_and_push "latest"
+            fi
+          done
+          #      - magma_slack_notify
+
+########## CWAG-DEPLOY-LATEST ##########
+
+  cwag-deploy-latest:
+
+    needs: [cwag-deploy, xwfm-deploy-latest]
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Export Magma root path
+      run: |
+          echo "MAGMA_ROOT=${PWD}" >> $GITHUB_ENV
+          echo "DOCKER_REGISTRY=cwf_" >> $GITHUB_ENV
+    - name: Build the docker-compose stack
+      run: |
+           docker-compose up -d
+    - name: Build CWAG containers
+      run: |
+            cd ${MAGMA_ROOT}/cwf/gateway/docker
+            docker-compose -f docker-compose.yml -f docker-compose.override.yml build --parallel
+    - name: tag-push-docker
+      run: |
+          if [ "${GITHUB_BASE_REF}" != "master" ]; then
+            echo "Push only happens for master branch"
+            exit 0
+          fi
+          DOCKER_REGISTRY="$DOCKER_FEG_REGISTRY"
+          DOCKER_USERNAME="$USERNAME"
+          DOCKER_PASSWORD="$PASSWORD"
+          docker login "${DOCKER_REGISTRY}" -u "${DOCKER_USERNAME}" -p "${DOCKER_PASSWORD}"
+          IMAGES="gateway_python|gateway_pipelined|gateway_go"
+          IMAGES_ARRAY=($(echo $IMAGES | tr "|" "\n"))
+          PROJECT=cwf
+          TAG=${GITHUB_SHA:0:8}
+          TAG_LATEST=true
+          function tag_and_push {
+            docker tag "$IMAGE_ID" "${DOCKER_REGISTRY}/$IMAGE:$1"
+            echo "Pushing ${DOCKER_REGISTRY}/$IMAGE:$1"
+            docker push "${DOCKER_REGISTRY}/$IMAGE:$1"
+          }
+          for IMAGE in "${IMAGES_ARRAY[@]}"; do
+            IMAGE_TOSEARCH=$IMAGE
+            if [ ! -z $PROJECT ]; then
+              IMAGE_TOSEARCH="${PROJECT}_${IMAGE}"
+            fi
+            IMAGE_ID=$(docker images "$IMAGE_TOSEARCH:latest" --format "{{.ID}}")
+            tag_and_push "$TAG"
+            if [ "$TAG_LATEST" = true ]; then
+              tag_and_push "latest"
+            fi
+          done
+    - name: persist-githash-version - Set prefix
+      run: |
+          echo "file_prefix=cwag" >> $GITHUB_ENV
+    - name: persist-githash-version - Create version file
+      run: |
+          cd ${MAGMA_ROOT}/circleci
+          mkdir -p versions
+          echo "${GITHUB_SHA:0:8}" > versions/<< ${file_prefix} >>_version
+#      - magma_slack_notify
